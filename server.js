@@ -49,7 +49,10 @@ function rateLimited(ip) {
   const now = Date.now();
   const e = hits.get(ip);
   if (!e || now - e.start > RATE_WINDOW_MS) {
-    if (hits.size > RATE_MAP_MAX) hits.clear(); // tope de memoria
+    if (hits.size >= RATE_MAP_MAX) {
+      for (const [k, v] of hits) if (now - v.start > RATE_WINDOW_MS) hits.delete(k); // purga expirados
+      if (hits.size >= RATE_MAP_MAX) hits.delete(hits.keys().next().value);          // si sigue lleno, el más viejo (LRU)
+    }
     hits.set(ip, { start: now, n: 1 });
     return false;
   }

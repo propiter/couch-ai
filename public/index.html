@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Asistente de Sofá</title>
+<style>
+  :root { --bg:#0b0f14; --card:#141b24; --accent:#4f9cff; --text:#e8eef5; --muted:#8aa0b5; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--text);
+         min-height:100dvh; display:flex; flex-direction:column; }
+  header { padding:16px 18px; font-weight:700; font-size:18px; border-bottom:1px solid #1e2a36; display:flex; align-items:center; gap:8px; }
+  header .dot { width:9px; height:9px; border-radius:50%; background:#36d57d; }
+  #log { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:10px; }
+  .msg { max-width:85%; padding:11px 14px; border-radius:16px; line-height:1.4; white-space:pre-wrap; word-wrap:break-word; }
+  .user { align-self:flex-end; background:var(--accent); color:#04122a; border-bottom-right-radius:4px; }
+  .bot  { align-self:flex-start; background:var(--card); border-bottom-left-radius:4px; }
+  .sys  { align-self:center; color:var(--muted); font-size:13px; text-align:center; }
+  footer { padding:12px; display:flex; gap:8px; align-items:center; border-top:1px solid #1e2a36; background:#0d131a; }
+  #text { flex:1; padding:13px 15px; border-radius:22px; border:1px solid #27333f; background:#0b1118; color:var(--text); font-size:16px; outline:none; }
+  button { border:0; border-radius:50%; width:52px; height:52px; font-size:22px; cursor:pointer; flex:none; }
+  #mic { background:var(--accent); color:#04122a; }
+  #mic.rec { background:#ff4f6d; color:#fff; animation:pulse 1s infinite; }
+  #send { background:#27333f; color:var(--text); }
+  @keyframes pulse { 0%,100%{transform:scale(1)} 50%{transform:scale(1.12)} }
+  .hint { color:var(--muted); font-size:12px; }
+</style>
+</head>
+<body>
+  <header><span class="dot"></span> Asistente de Sofá</header>
+  <div id="log">
+    <div class="msg sys">Toca el micrófono y habla, o escribe. Te respondo por voz.</div>
+  </div>
+  <footer>
+    <button id="mic" title="Hablar">🎤</button>
+    <input id="text" placeholder="Escribe o habla…" autocomplete="off" />
+    <button id="send" title="Enviar">➤</button>
+  </footer>
+
+<script>
+const API = location.origin + '/api/chat';
+const log = document.getElementById('log');
+const input = document.getElementById('text');
+const micBtn = document.getElementById('mic');
+const sendBtn = document.getElementById('send');
+let history = [];
+let speakOn = true;
+
+function add(role, text) {
+  const d = document.createElement('div');
+  d.className = 'msg ' + (role === 'user' ? 'user' : role === 'bot' ? 'bot' : 'sys');
+  d.textContent = text;
+  log.appendChild(d); log.scrollTop = log.scrollHeight;
+  return d;
+}
+
+// --- Voz de salida (TTS) ---
+function speak(text) {
+  if (!speakOn || !('speechSynthesis' in window)) return;
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'es-US'; u.rate = 1.03;
+  const v = speechSynthesis.getVoices().find(x => /es(-|_)/i.test(x.lang));
+  if (v) u.voice = v;
+  speechSynthesis.speak(u);
+}
+
+async function send(text) {
+  text = (text || '').trim();
+  if (!text) return;
+  add('user', text);
+  input.value = '';
+  const thinking = add('bot', '…');
+  try {
+    const r = await fetch(API, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: text, history })
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+    thinking.textContent = data.reply;
+    history.push({ role: 'user', content: text });
+    history.push({ role: 'assistant', content: data.reply });
+    if (history.length > 20) history = history.slice(-20);
+    speak(data.reply);
+  } catch (e) {
+    thinking.textContent = '⚠️ ' + e.message;
+  }
+}
+
+sendBtn.onclick = () => send(input.value);
+input.addEventListener('keydown', (e) => { if (e.key === 'Enter') send(input.value); });
+
+// --- Voz de entrada (STT) ---
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+if (SR) {
+  const rec = new SR();
+  rec.lang = 'es-US'; rec.interimResults = false; rec.maxAlternatives = 1;
+  let listening = false;
+  micBtn.onclick = () => { if (listening) rec.stop(); else { try { rec.start(); } catch(_){} } };
+  rec.onstart = () => { listening = true; micBtn.classList.add('rec'); };
+  rec.onend = () => { listening = false; micBtn.classList.remove('rec'); };
+  rec.onresult = (e) => { const t = e.results[0][0].transcript; input.value = t; send(t); };
+  rec.onerror = () => { listening = false; micBtn.classList.remove('rec'); };
+} else {
+  micBtn.onclick = () => add('sys', 'Este navegador no soporta voz; usa el texto.');
+}
+// Precargar voces TTS
+if ('speechSynthesis' in window) speechSynthesis.getVoices();
+</script>
+</body>
+</html>

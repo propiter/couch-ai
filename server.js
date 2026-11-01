@@ -4,6 +4,7 @@ import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { timingSafeEqual } from 'node:crypto';
 
 const PORT = process.env.PORT || 8080;
 const API_KEY = process.env.ANTHROPIC_API_KEY;
@@ -13,6 +14,23 @@ const ACCESS_TOKEN = process.env.ACCESS_TOKEN || ''; // si está, se exige en /a
 const MAX_BODY = 64 * 1024; // 64 KB
 const RATE_MAX = parseInt(process.env.RATE_MAX || '30', 10); // req/min por IP
 const RATE_WINDOW_MS = 60 * 1000;
+const RATE_MAP_MAX = 5000; // tope del mapa de rate-limit (anti-memoria)
+// Detrás del Traefik de Dokploy el cliente real es el ÚLTIMO hop de X-Forwarded-For.
+const TRUST_PROXY = (process.env.TRUST_PROXY || 'true') === 'true';
+
+function clientIp(req) {
+  if (TRUST_PROXY) {
+    const xff = (req.headers['x-forwarded-for'] || '').toString();
+    if (xff) return xff.split(',').pop().trim(); // hop añadido por el proxy de confianza
+  }
+  return (req.socket.remoteAddress || '').toString();
+}
+
+function safeEqual(a, b) {
+  const ba = Buffer.from(String(a)); const bb = Buffer.from(String(b));
+  if (ba.length !== bb.length) return false;
+  return timingSafeEqual(ba, bb);
+}
 
 const SYSTEM = `Eres "Asistente de Sofá", una IA cálida y directa que vive en el televisor de una familia en Colombia.
 Respondes en español, en frases cortas y naturales, pensadas para ESCUCHARSE en voz alta (sin markdown, sin listas largas, sin emojis excesivos).
@@ -30,7 +48,11 @@ const hits = new Map();
 function rateLimited(ip) {
   const now = Date.now();
   const e = hits.get(ip);
-  if (!e || now - e.start > RATE_WINDOW_MS) { hits.set(ip, { start: now, n: 1 }); return false; }
+  if (!e || now - e.start > RATE_WINDOW_MS) {
+    if (hits.size > RATE_MAP_MAX) hits.clear(); // tope de memoria
+    hits.set(ip, { start: now, n: 1 });
+    return false;
+  }
   e.n += 1;
   return e.n > RATE_MAX;
 }
@@ -57,13 +79,13 @@ function cleanHistory(h) {
 }
 
 const server = http.createServer((req, res) => {
-  const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').toString().split(',')[0].trim();
+  const ip = clientIp(req);
 
   if (req.url === '/health') { res.writeHead(200); return res.end('ok'); }
 
   if (req.method === 'POST' && req.url === '/api/chat') {
     if (rateLimited(ip)) { res.writeHead(429, { 'content-type': 'application/json' }); return res.end('{"error":"Demasiadas solicitudes, espera un momento."}'); }
-    if (ACCESS_TOKEN && req.headers['x-access-token'] !== ACCESS_TOKEN) {
+    if (ACCESS_TOKEN && !safeEqual(req.headers['x-access-token'] || '', ACCESS_TOKEN)) {
       res.writeHead(401, { 'content-type': 'application/json' }); return res.end('{"error":"Código de acceso inválido."}');
     }
     if (parseInt(req.headers['content-length'] || '0', 10) > MAX_BODY) { res.writeHead(413); return res.end('too large'); }

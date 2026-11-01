@@ -39,6 +39,11 @@
 
 <script>
 const API = location.origin + '/api/chat';
+function getToken() {
+  let t = localStorage.getItem('couch_pass');
+  if (!t) { t = (prompt('Código de acceso:') || '').trim(); if (t) localStorage.setItem('couch_pass', t); }
+  return t || '';
+}
 const log = document.getElementById('log');
 const input = document.getElementById('text');
 const micBtn = document.getElementById('mic');
@@ -73,10 +78,12 @@ async function send(text) {
   const thinking = add('bot', '…');
   try {
     const r = await fetch(API, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-access-token': getToken() },
       body: JSON.stringify({ message: text, history })
     });
-    const data = await r.json();
+    const data = await r.json().catch(() => ({}));
+    if (r.status === 401) { localStorage.removeItem('couch_pass'); throw new Error('Código de acceso inválido. Recarga e inténtalo de nuevo.'); }
     if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
     thinking.textContent = data.reply;
     history.push({ role: 'user', content: text });
